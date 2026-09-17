@@ -140,7 +140,7 @@ def main():
                     'days_since_last_purchase', 'days_since_first_purchase',
                     'unique_products', 'avg_days_between_orders', 'orders_per_month']
     
-    categorical_cols = ['favorite_category']
+    categorical_cols = ['favorite_category', 'city']
     
     # 4. Handle outliers
     df = handle_outliers(df, numeric_cols)
@@ -157,7 +157,10 @@ def main():
     print(f"\nSaved processed data to {output_path}")
     
     # Save feature list
-    feature_cols = [c for c in df_encoded.columns if c not in ['CustomerID', 'AccountNumber', 'will_buy_again']]
+    feature_cols = [c for c in df_encoded.columns if c not in [
+        'CustomerID', 'AccountNumber', 'will_buy_soon',
+        'will_buy_again_6m', 'customer_cohort'
+    ]]
     joblib.dump(feature_cols, MODELS_DIR / "feature_columns.pkl")
     print(f"Saved {len(feature_cols)} feature columns")
     

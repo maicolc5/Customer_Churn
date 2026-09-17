@@ -17,13 +17,13 @@ def load_data():
     return df
 
 def create_recency_features(df):
-    """Create features based on purchase recency."""
+    """Create recency features using information available at the cutoff."""
     print("\nCreating recency features...")
     
     # Recency segments
     df['recency_segment'] = pd.cut(
         df['days_since_last_purchase'],
-        bins=[0, 30, 90, 180, 365, np.inf],
+        bins=[-np.inf, 30, 90, 180, 365, np.inf],
         labels=['very_recent', 'recent', 'moderate', 'old', 'very_old']
     )
     
@@ -41,7 +41,7 @@ def create_recency_features(df):
     return df
 
 def create_monetary_features(df):
-    """Create features based on spending patterns."""
+    """Create monetary features from purchases before the cutoff."""
     print("\nCreating monetary features...")
     
     # Spending tier
@@ -152,7 +152,10 @@ def main():
     print(f"\nSaved engineered data to {output_path}")
     
     # Update feature list
-    feature_cols = [c for c in df.columns if c not in ['CustomerID', 'AccountNumber', 'will_buy_again']]
+    feature_cols = [c for c in df.columns if c not in [
+        'CustomerID', 'AccountNumber', 'will_buy_soon',
+        'will_buy_again_6m', 'customer_cohort'
+    ]]
     joblib.dump(feature_cols, MODELS_DIR / "feature_columns.pkl")
     print(f"Updated feature list: {len(feature_cols)} features")
     

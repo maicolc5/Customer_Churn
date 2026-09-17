@@ -20,19 +20,26 @@ import warnings
 DATA_DIR = Path(__file__).parent / "data"
 MODELS_DIR = Path(__file__).parent / "models"
 
-def load_data():
+def load_data(target_column):
     """Load engineered features."""
     df = pd.read_csv(DATA_DIR / "engineered_features.csv")
+
+    # Model only repeat-purchase behavior from customers who existed at the cutoff.
+    df = df[df['customer_cohort'].isin([
+        'existing_returned',
+        'existing_not_returned'
+    ])].copy()
     
     # Separate features and target
     feature_cols = joblib.load(MODELS_DIR / "feature_columns.pkl")
     
     X = df[feature_cols]
-    y = df['will_buy_again']
+    y = df[target_column]
     
     print(f"Features shape: {X.shape}")
     print(f"Target distribution:\n{y.value_counts()}")
     
+    print(f"Target: {target_column}")
     return X, y
 
 def get_models():
@@ -121,28 +128,27 @@ def main():
     print("MODEL SELECTION")
     print("=" * 60)
     
-    # Load data
-    X, y = load_data()
-    
-    # Get models
-    models = get_models()
-    
-    # Evaluate
-    results = evaluate_models(X, y, models)
-    
-    # Rank
-    rankings, best_model_name = rank_models(results)
-    
-    # Save results
-    rankings.to_csv(DATA_DIR / "model_rankings.csv", index=False)
-    print(f"\nSaved rankings to {DATA_DIR / 'model_rankings.csv'}")
-    
-    # Get best model
-    best_model = select_best_model(best_model_name, models)
-    
-    # Save best model name
-    joblib.dump(best_model_name, MODELS_DIR / "best_model_name.pkl")
-    print(f"Saved best model name: {best_model_name}")
+    targets = {
+        'soon': 'will_buy_soon',
+        '6m': 'will_buy_again_6m'
+    }
+
+    for horizon, target_column in targets.items():
+        print(f"\nEvaluating horizon: {horizon}")
+        X, y = load_data(target_column)
+        models = get_models()
+        results = evaluate_models(X, y, models)
+        rankings, best_model_name = rank_models(results)
+
+        rankings_path = DATA_DIR / f"model_rankings_{horizon}.csv"
+        rankings.to_csv(rankings_path, index=False)
+        joblib.dump(best_model_name, MODELS_DIR / f"best_model_name_{horizon}.pkl")
+        print(f"Saved rankings to {rankings_path}")
+        print(f"Saved best model name: {best_model_name}")
+
+        if horizon == '6m':
+            rankings.to_csv(DATA_DIR / "model_rankings.csv", index=False)
+            joblib.dump(best_model_name, MODELS_DIR / "best_model_name.pkl")
     
     print("\n" + "=" * 60)
     print("MODEL SELECTION COMPLETE")

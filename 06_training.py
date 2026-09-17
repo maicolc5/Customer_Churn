@@ -21,10 +21,14 @@ MODELS_DIR = Path(__file__).parent / "models"
 def load_data():
     """Load engineered features."""
     df = pd.read_csv(DATA_DIR / "engineered_features.csv")
+    df = df[df['customer_cohort'].isin([
+        'existing_returned',
+        'existing_not_returned'
+    ])].copy()
     feature_cols = joblib.load(MODELS_DIR / "feature_columns.pkl")
     
     X = df[feature_cols]
-    y = df['will_buy_again']
+    y = df['will_buy_again_6m']
     
     return X, y, feature_cols
 
