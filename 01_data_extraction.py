@@ -154,32 +154,6 @@ def create_target_variable(df):
     return df.drop(columns=['future_orders_90d', 'future_orders_6m'])
 
 
-def create_sample_data(n_customers=1000):
-    """Create reproducible data when SQL Server is unavailable."""
-    import numpy as np
-
-    np.random.seed(42)
-    df = pd.DataFrame({
-        'CustomerID': range(1, n_customers + 1),
-        'AccountNumber': [f'AW{i:05d}' for i in range(1, n_customers + 1)],
-        'total_orders': np.random.poisson(3, n_customers) + 1,
-        'total_spent': np.random.exponential(500, n_customers),
-        'avg_order_value': np.random.normal(150, 50, n_customers),
-        'days_since_last_purchase': np.random.exponential(100, n_customers).astype(int),
-        'days_since_first_purchase': np.random.uniform(30, 1000, n_customers).astype(int),
-        'unique_products': np.random.poisson(2, n_customers) + 1,
-        'favorite_category': np.random.choice(
-            ['Bikes', 'Components', 'Clothing', 'Accessories'], n_customers
-        ),
-        'city': np.random.choice(
-            ['Seattle', 'Boston', 'Phoenix', 'Dallas'], n_customers
-        ),
-        'avg_days_between_orders': np.random.exponential(45, n_customers),
-        'orders_per_month': np.random.exponential(0.5, n_customers),
-        'future_orders_90d': np.random.binomial(1, 0.20, n_customers),
-        'future_orders_6m': np.random.binomial(1, 0.35, n_customers)
-    })
-    return create_target_variable(df)
 
 
 def main():
@@ -199,20 +173,17 @@ def main():
         output_path = DATA_DIR / "raw_customer_features.csv"
         df.to_csv(output_path, index=False)
         print(f"Data saved to {output_path}")
-        print("\nTarget Distribution:")
-        print(df['will_buy_again'].value_counts(normalize=True))
+        print("\nTarget Distribution - 6 months:")
+        print(df['will_buy_again_6m'].value_counts(normalize=True))
         conn.close()
 
     except Exception as error:
         print(f"Error: {error}")
-        print("\nGenerating sample data for demonstration...")
-        df = create_sample_data()
-        output_path = DATA_DIR / "raw_customer_features.csv"
-        df.to_csv(output_path, index=False)
-        print(f"Sample data saved to {output_path}")
-        print("\nTarget Distribution:")
-        print(df['will_buy_again'].value_counts(normalize=True))
 
+    finally:
+        if conn is not None:
+            conn.close()
+            print("Database connection closed.")
 
 if __name__ == "__main__":
     main()

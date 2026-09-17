@@ -47,15 +47,27 @@ def handle_missing_values(df):
                 print(f"  Filled {col} with median: {median_val:.2f}")
                 
         
-        # Categorical: fill with mode
+        # Keep missing categorical information explicit instead of assigning
+        # an arbitrary category such as the global mode.
         cat_cols = df.select_dtypes(include=['object', 'str']).columns
         for col in cat_cols:
             if df[col].isnull().any():
-                mode_val = df[col].mode()[0]
-                df[col] = df[col].fillna(mode_val)
-                print(f"  Filled {col} with mode: {mode_val}")
+                df[col] = df[col].fillna('Unknown')
+                print(f"  Filled {col} with category: Unknown")
     else:
         print("No missing values found.")
+
+    # Preserve whether an interval between repeat orders can be measured.
+    df['has_repeat_order_history'] = (df['total_orders'] > 1).astype(int)
+
+    repeat_order_median = df.loc[
+        df['total_orders'] > 1,
+        'avg_days_between_orders'
+    ].median()
+    df['avg_days_between_orders'] = df[
+        'avg_days_between_orders'
+    ].replace(9999, repeat_order_median)
+    print(f"  Replaced 9999-day sentinel with median: {repeat_order_median:.2f}")
     
     return df
 
@@ -134,11 +146,24 @@ def main():
     
     # 2. Handle missing values
     df = handle_missing_values(df)
+
+    # Group cities representing less than 0.5% of the dataset.
+    city_share = df['city'].value_counts(normalize=True)
+    rare_cities = city_share[city_share < 0.005].index
+    df['city'] = df['city'].where(
+        ~df['city'].isin(rare_cities),
+        'Other'
+    )
+    print(f"Grouped {len(rare_cities)} rare cities into Other")
     
     # 3. Identify column types
-    numeric_cols = ['total_orders', 'total_spent', 'avg_order_value',
-                    'days_since_last_purchase', 'days_since_first_purchase',
-                    'unique_products', 'avg_days_between_orders', 'orders_per_month']
+    numeric_cols = [
+        'total_orders',
+        'total_spent',
+        'avg_order_value',
+        'unique_products',
+        'orders_per_month'
+    ]
     
     categorical_cols = ['favorite_category', 'city']
     

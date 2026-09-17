@@ -26,18 +26,30 @@ def basic_info(df):
     print(f"\nMissing Values:\n{df.isnull().sum()}")
     print(f"\nBasic Statistics:\n{df.describe()}")
 
-def analyze_target(df):
+def analyze_cohorts(df):
+    """Summarize all customer cohorts before modeling."""
+    print("\n" + "=" * 60)
+    print("CUSTOMER COHORT ANALYSIS")
+    print("=" * 60)
+
+    cohort_counts = df['customer_cohort'].value_counts()
+    cohort_pct = df['customer_cohort'].value_counts(normalize=True) * 100
+
+    for cohort, count in cohort_counts.items():
+        print(f"  {cohort}: {count} ({cohort_pct[cohort]:.1f}%)")
+
+def analyze_target(df, target_column):
     """Analyze the target variable distribution."""
     print("\n" + "=" * 60)
-    print("TARGET VARIABLE ANALYSIS (will_buy_again)")
+    print(f"TARGET VARIABLE ANALYSIS ({target_column})")
     print("=" * 60)
     
-    target_counts = df['will_buy_again'].value_counts()
-    target_pct = df['will_buy_again'].value_counts(normalize=True) * 100
+    target_counts = df[target_column].value_counts()
+    target_pct = df[target_column].value_counts(normalize=True) * 100
     
     print(f"\nClass Distribution:")
-    print(f"  0 (Churned): {target_counts[0]} ({target_pct[0]:.1f}%)")
-    print(f"  1 (Active):  {target_counts[1]} ({target_pct[1]:.1f}%)")
+    print(f"  0 (No purchase): {target_counts.get(0, 0)} ({target_pct.get(0, 0):.1f}%)")
+    print(f"  1 (Purchase):    {target_counts.get(1, 0)} ({target_pct.get(1, 0):.1f}%)")
     
     # Check for imbalance
     imbalance_ratio = target_counts.min() / target_counts.max()
@@ -48,17 +60,17 @@ def analyze_target(df):
     
     return target_counts
 
-def analyze_features(df):
+def analyze_features(df, target_columns):
     """Analyze individual features."""
     print("\n" + "=" * 60)
     print("FEATURE ANALYSIS")
     print("=" * 60)
     
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'str']).columns.tolist()
     
     # Remove target and ID columns
-    numeric_cols = [c for c in numeric_cols if c not in ['will_buy_again', 'CustomerID']]
+    numeric_cols = [c for c in numeric_cols if c not in target_columns + ['CustomerID']]
 
     categorical_cols = [c for c in categorical_cols if c != 'AccountNumber']
     
@@ -67,7 +79,7 @@ def analyze_features(df):
     
     return numeric_cols, categorical_cols
 
-def plot_distributions(df, numeric_cols):
+def plot_distributions(df, numeric_cols, output_suffix):
     """Plot distributions of numeric features."""
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes = axes.ravel()
@@ -80,14 +92,15 @@ def plot_distributions(df, numeric_cols):
         ax.set_ylabel('Frequency')
     
     plt.tight_layout()
-    plt.savefig(DATA_DIR / "feature_distributions.png", dpi=150, bbox_inches='tight')
-    print(f"\nSaved: feature_distributions.png")
+    output_path = DATA_DIR / f"feature_distributions_{output_suffix}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved: {output_path.name}")
     plt.close()
 
-def plot_correlation_matrix(df, numeric_cols):
+def plot_correlation_matrix(df, numeric_cols, target_column, output_suffix):
     """Plot correlation matrix."""
     # Add target to correlation
-    cols = numeric_cols + ['will_buy_again']
+    cols = numeric_cols + [target_column]
     
     corr_matrix = df[cols].corr()
     
@@ -95,34 +108,36 @@ def plot_correlation_matrix(df, numeric_cols):
     sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f')
     plt.title('Feature Correlation Matrix')
     plt.tight_layout()
-    plt.savefig(DATA_DIR / "correlation_matrix.png", dpi=150, bbox_inches='tight')
-    print(f"Saved: correlation_matrix.png")
+    output_path = DATA_DIR / f"correlation_matrix_{output_suffix}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Saved: {output_path.name}")
     plt.close()
     
     # Print top correlations with target
-    target_corr = corr_matrix['will_buy_again'].drop('will_buy_again').abs().sort_values(ascending=False)
+    target_corr = corr_matrix[target_column].drop(target_column).abs().sort_values(ascending=False)
     print("\nTop Correlations with Target:")
     for feat, corr in target_corr.items():
         print(f"  {feat}: {corr:.3f}")
 
-def plot_feature_vs_target(df, numeric_cols):
+def plot_feature_vs_target(df, numeric_cols, target_column, output_suffix):
     """Plot features grouped by target."""
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes = axes.ravel()
     
     for idx, col in enumerate(numeric_cols[:6]):
         ax = axes[idx]
-        df.groupby('will_buy_again')[col].hist(bins=30, alpha=0.6, ax=ax, legend=True)
-        ax.set_title(f'{col} by Churn Status')
+        df.groupby(target_column)[col].hist(bins=30, alpha=0.6, ax=ax, legend=True)
+        ax.set_title(f'{col} by {target_column}')
         ax.set_xlabel(col)
-        ax.legend(['Churned', 'Active'])
+        ax.legend(['No purchase', 'Purchase'])
     
     plt.tight_layout()
-    plt.savefig(DATA_DIR / "features_by_target.png", dpi=150, bbox_inches='tight')
-    print(f"\nSaved: features_by_target.png")
+    output_path = DATA_DIR / f"features_by_target_{output_suffix}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved: {output_path.name}")
     plt.close()
 
-def plot_categorical_analysis(df, categorical_cols):
+def plot_categorical_analysis(df, categorical_cols, target_column):
     """Analyze categorical features."""
     if not categorical_cols:
         print("\nNo categorical features to analyze.")
@@ -137,31 +152,30 @@ def plot_categorical_analysis(df, categorical_cols):
         print(df[col].value_counts())
         
         # Churn rate by category
-        churn_rate = df.groupby(col)['will_buy_again'].mean() * 100
-        print(f"\nChurn Rate by {col}:")
-        print(churn_rate.sort_values(ascending=False))
+        purchase_rate = df.groupby(col)[target_column].mean() * 100
+        print(f"\nPurchase Rate by {col}:")
+        print(purchase_rate.sort_values(ascending=False))
 
-def generate_summary(df):
+def generate_summary(df, target_column):
     """Generate summary insights."""
     print("\n" + "=" * 60)
     print("KEY INSIGHTS")
     print("=" * 60)
     
-    # Overall churn rate
-    churn_rate = (1 - df['will_buy_again'].mean()) * 100
-    print(f"\nOverall Churn Rate: {churn_rate:.1f}%")
+    purchase_rate = df[target_column].mean() * 100
+    print(f"\nOverall Purchase Rate: {purchase_rate:.1f}%")
     
     # Customers at risk
     at_risk = df[df['days_since_last_purchase'] > 180]
-    print(f"\nCustomers at Risk (no purchase in 6 months): {len(at_risk)}")
+    print(f"\nCustomers with more than 180 days since purchase: {len(at_risk)}")
     
     # High-value customers
     high_value = df[df['total_spent'] > df['total_spent'].quantile(0.75)]
-    high_value_churn = (1 - high_value['will_buy_again'].mean()) * 100
-    print(f"High-Value Customer Churn Rate: {high_value_churn:.1f}%")
+    high_value_purchase = high_value[target_column].mean() * 100
+    print(f"High-Value Customer Purchase Rate: {high_value_purchase:.1f}%")
     
     # Most valuable category
-    category_value = df.groupby('favorite_category')['total_spent'].mean()
+    category_value = df.groupby('favorite_category', dropna=False)['total_spent'].mean()
     print(f"\nAverage Spend by Category:")
     print(category_value.sort_values(ascending=False))
 
@@ -170,16 +184,28 @@ def main():
     df = load_data()
     
     basic_info(df)
-    target_counts = analyze_target(df)
-    numeric_cols, categorical_cols = analyze_features(df)
-    
-    print("\nGenerating visualizations...")
-    plot_distributions(df, numeric_cols)
-    plot_correlation_matrix(df, numeric_cols)
-    plot_feature_vs_target(df, numeric_cols)
-    plot_categorical_analysis(df, categorical_cols)
-    
-    generate_summary(df)
+    analyze_cohorts(df)
+
+    # Model-specific EDA: only customers with purchase history before the cutoff.
+    model_df = df[df['customer_cohort'].isin([
+        'existing_returned',
+        'existing_not_returned'
+    ])].copy()
+    print(f"\nModel population: {len(model_df)} existing customers")
+
+    target_columns = ['will_buy_soon', 'will_buy_again_6m']
+    numeric_cols, categorical_cols = analyze_features(model_df, target_columns)
+
+    for target_column in target_columns:
+        target_counts = analyze_target(model_df, target_column)
+        output_suffix = target_column.replace('will_buy_', '')
+
+        print(f"\nGenerating visualizations for {target_column}...")
+        plot_distributions(model_df, numeric_cols, output_suffix)
+        plot_correlation_matrix(model_df, numeric_cols, target_column, output_suffix)
+        plot_feature_vs_target(model_df, numeric_cols, target_column, output_suffix)
+        plot_categorical_analysis(model_df, categorical_cols, target_column)
+        generate_summary(model_df, target_column)
     
     print("\n" + "=" * 60)
     print("EDA COMPLETE")
