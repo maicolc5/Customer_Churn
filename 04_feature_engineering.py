@@ -16,6 +16,98 @@ def load_data():
     print(f"Loaded {len(df)} rows with {len(df.columns)} columns")
     return df
 
+
+def create_geographic_features(df):
+    """Assign each small city to its nearest major city in the same country."""
+    print("\nCreating geographic area features...")
+
+    required_columns = {
+        'country', 'city', 'city_class', 'latitude', 'longitude'
+    }
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise KeyError(f"Missing geographic columns: {sorted(missing_columns)}")
+
+    df['geographic_area'] = 'Unknown'
+    df['distance_to_major_city_km'] = np.nan
+
+    valid_rows = df[
+        df['country'].notna() &
+        df['country'].ne('Unknown') &
+        df['city'].notna() &
+        df['city'].ne('Unknown') &
+        df['city_class'].isin(['Major City', 'Small City']) &
+        df['latitude'].notna() &
+        df['longitude'].notna()
+    ]
+    major_reference = (
+        valid_rows[valid_rows['city_class'].eq('Major City')]
+        .groupby(['country', 'city'], as_index=False)
+        .agg(
+            major_latitude=('latitude', 'mean'),
+            major_longitude=('longitude', 'mean')
+        )
+    )
+
+    earth_radius_km = 6371.0
+    for country, country_rows in valid_rows.groupby('country'):
+        country_majors = major_reference[
+            major_reference['country'].eq(country)
+        ]
+        if country_majors.empty:
+            continue
+
+        row_indexes = country_rows.index.to_numpy()
+        latitudes = np.radians(country_rows['latitude'].to_numpy())[:, None]
+        longitudes = np.radians(country_rows['longitude'].to_numpy())[:, None]
+        major_latitudes = np.radians(
+            country_majors['major_latitude'].to_numpy()
+        )[None, :]
+        major_longitudes = np.radians(
+            country_majors['major_longitude'].to_numpy()
+        )[None, :]
+
+        delta_latitude = major_latitudes - latitudes
+        delta_longitude = major_longitudes - longitudes
+        haversine_a = (
+            np.sin(delta_latitude / 2) ** 2 +
+            np.cos(latitudes) * np.cos(major_latitudes) *
+            np.sin(delta_longitude / 2) ** 2
+        )
+        distances = 2 * earth_radius_km * np.arcsin(
+            np.sqrt(np.clip(haversine_a, 0, 1))
+        )
+        nearest_positions = distances.argmin(axis=1)
+        nearest_distances = distances[
+            np.arange(len(country_rows)), nearest_positions
+        ]
+        nearest_cities = country_majors.iloc[nearest_positions]['city'].to_numpy()
+
+        is_major = country_rows['city_class'].eq('Major City').to_numpy()
+        area_labels = np.where(
+            is_major,
+            country_rows['city'].to_numpy(),
+            'around_' + nearest_cities
+        )
+        df.loc[row_indexes, 'geographic_area'] = area_labels
+        df.loc[row_indexes, 'distance_to_major_city_km'] = nearest_distances
+
+    df['has_geographic_match'] = df['distance_to_major_city_km'].notna().astype(int)
+    df['city_class_major'] = (
+        df['city_class'].map({
+            'Major City': 1,
+            'Small City': 0
+        }).fillna(-1).astype(int)
+    )
+    # Do not replace an unknown geographic distance with a real distance.
+    # -1 is outside the valid kilometer range and has_geographic_match marks it.
+    df['distance_to_major_city_km'] = df[
+        'distance_to_major_city_km'
+    ].fillna(-1)
+    print(f"  Geographic areas created: {df['geographic_area'].nunique()}")
+    print(f"  Small-city assignments: {df['geographic_area'].str.startswith('around_').sum()}")
+    return df
+
 def create_recency_features(df):
     """Create recency features using information available at the cutoff."""
     print("\nCreating recency features...")
@@ -45,11 +137,16 @@ def create_monetary_features(df):
     print("\nCreating monetary features...")
     
     # Spending tier
-    df['spending_tier'] = pd.qcut(
+    spending_codes = pd.qcut(
         df['total_spent'],
         q=4,
-        labels=['low', 'medium', 'high', 'very_high']
+        labels=False,
+        duplicates='drop'
     )
+    spending_labels = ['low', 'medium', 'high', 'very_high']
+    df['spending_tier'] = spending_codes.map(
+        dict(enumerate(spending_labels))
+    ).astype('category')
     
     # Value per product
     df['value_per_product'] = df['total_spent'] / df['unique_products'].replace(0, 1)
@@ -113,15 +210,47 @@ def encode_new_categorical(df):
     """Encode newly created categorical features."""
     print("\nEncoding new categorical features...")
     
-    categorical_cols = ['recency_segment', 'spending_tier']
+    # geographic_area is retained only for analysis; its many categories are
+    # intentionally excluded from the main model feature set.
+    df = df.drop(
+        columns=[
+            'city',
+            'city_class',
+            'geographic_area',
+            'latitude',
+            'longitude'
+        ],
+        errors='ignore'
+    )
+    regular_categorical_cols = ['recency_segment', 'spending_tier']
     df_encoded = pd.get_dummies(
         df,
-        columns=categorical_cols,
+        columns=regular_categorical_cols,
         drop_first=True,
         dtype=int
     )
-    
-    print(f"Encoded {len(categorical_cols)} new categorical columns")
+
+    country_dummies = pd.get_dummies(
+        df_encoded['country'],
+        prefix='country',
+        drop_first=False,
+        dtype=int
+    )
+    df_encoded = pd.concat(
+        [df_encoded.drop(columns=['country']), country_dummies],
+        axis=1
+    )
+
+    # Keep Australia as an explicit country dummy. Canada is the smallest
+    # represented country and is used as the reference category instead.
+    df_encoded = df_encoded.drop(
+        columns=['country_Canada', 'country_Unknown'],
+        errors='ignore'
+    )
+
+    # plus the country dummies
+    encoded_count = len(regular_categorical_cols) + 1
+    print(f"Encoded {encoded_count} categorical columns")
     return df_encoded
 
 def main():
@@ -133,6 +262,7 @@ def main():
     df = load_data()
     
     # Create features
+    df = create_geographic_features(df)
     df = create_recency_features(df)
     df = create_monetary_features(df)
     df = create_frequency_features(df)

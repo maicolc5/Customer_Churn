@@ -41,6 +41,10 @@ def handle_missing_values(df):
         # Numeric: fill with median
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
+            # Keep missing population values available for an explicit Unknown
+            # city-size category instead of classifying them as median-sized.
+            if col == 'population':
+                continue
             if df[col].isnull().any():
                 median_val = df[col].median()
                 df[col] = df[col].fillna(median_val)
@@ -77,6 +81,62 @@ def remove_duplicates(df):
     df = df.drop_duplicates()
     after = len(df)
     print(f"Removed {before - after} duplicates")
+    return df
+
+
+def build_major_city(df):
+    """Classify cities independently within each country.
+
+    The top 25% of cities by population within each country are Major City;
+    the remaining cities are Small City. Missing geography stays Unknown.
+    """
+    print("\nClassifying cities by country...")
+
+    if 'city' not in df.columns:
+        print("No city column found; skipping geospatial grouping.")
+        return df
+
+    df['city'] = df['city'].fillna('Unknown').astype(str).str.strip().str.title()
+    df['city'] = df['city'].replace(['Unknown', 'Uknow', 'N/A', ''], 'Other')
+
+    if 'country' in df.columns:
+        df['country'] = df['country'].fillna('Unknown').astype(str).str.strip().str.title()
+
+    # Classify one population value per city so customer volume does not
+    # distort the country-relative ranking.
+    df['city_class'] = 'Unknown'
+    if 'country' in df.columns and 'population' in df.columns:
+        city_reference = (
+            df.loc[
+                (df['country'] != 'Unknown') &
+                (df['city'] != 'Other') &
+                df['population'].notna(),
+                ['country', 'city', 'population']
+            ]
+            .groupby(['country', 'city'], as_index=False)['population']
+            .median()
+        )
+        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
+            pct=True,
+            method='average'
+        )
+        city_reference['city_class'] = np.where(
+            city_reference['country_rank'] >= 0.75,
+            'Major City',
+            'Small City'
+        )
+        class_map = city_reference.set_index(['country', 'city'])['city_class']
+        df['city_class'] = [
+            class_map.get((country, city), 'Unknown')
+            for country, city in zip(df['country'], df['city'])
+        ]
+
+    df['city_class'] = df['city_class'].fillna('Unknown')
+    if 'population' in df.columns and df['population'].isna().any():
+        df['population'] = df['population'].fillna(df['population'].median())
+    print(f"  Final city classes: {df['city_class'].nunique()}")
+    print("  City-class distribution by country:")
+    print(df.groupby(['country', 'city_class'], dropna=False).size().to_string())
     return df
 
 def handle_outliers(df, numeric_cols, method='iqr', threshold=1.5):
@@ -147,16 +207,10 @@ def main():
     # 2. Handle missing values
     df = handle_missing_values(df)
 
-    # Group cities representing less than 0.5% of the dataset.
-    city_share = df['city'].value_counts(normalize=True)
-    rare_cities = city_share[city_share < 0.005].index
-    df['city'] = df['city'].where(
-        ~df['city'].isin(rare_cities),
-        'Other'
-    )
-    print(f"Grouped {len(rare_cities)} rare cities into Other")
-    
-    # 3. Identify column types
+    # 3. Classify cities relative to other cities in the same country.
+    df = build_major_city(df)
+
+    # 4. Identify column types
     numeric_cols = [
         'total_orders',
         'total_spent',
@@ -165,15 +219,22 @@ def main():
         'orders_per_month'
     ]
     
-    categorical_cols = ['favorite_category', 'city']
+    # Keep raw geography until feature engineering calculates nearest major city.
+    df = df.drop(columns=['postal_code'], errors='ignore')
+    categorical_cols = ['favorite_category']
     
-    # 4. Handle outliers
+    # 5. Handle outliers
     df = handle_outliers(df, numeric_cols)
     
-    # 5. Encode categorical variables
+    # 6. Encode categorical variables
     df_encoded = encode_categorical(df, categorical_cols)
+
+    # 7. Convert boolean columns to 0/1 before saving the final dataset.
+    for col in df_encoded.columns:
+        if df_encoded[col].dtype == bool:
+            df_encoded[col] = df_encoded[col].astype(int)
     
-    # 6. Scale features (optional - some models don't need it)
+    # 8. Scale features (optional - some models don't need it)
     # df_scaled = scale_features(df_encoded, numeric_cols)
     
     # Save processed data

@@ -15,6 +15,11 @@ def load_data():
     df = pd.read_csv(DATA_DIR / "raw_customer_features.csv")
     return df
 
+
+def load_engineered_data():
+    """Load engineered features for model-specific visualizations."""
+    return pd.read_csv(DATA_DIR / "engineered_features.csv")
+
 def basic_info(df):
     """Print basic dataset information."""
     print("=" * 60)
@@ -37,6 +42,174 @@ def analyze_cohorts(df):
 
     for cohort, count in cohort_counts.items():
         print(f"  {cohort}: {count} ({cohort_pct[cohort]:.1f}%)")
+
+
+def analyze_geography(df):
+    """Summarize country-relative city classes and geodata coverage."""
+    print("\n" + "=" * 60)
+    print("GEOGRAPHIC ANALYSIS")
+    print("=" * 60)
+
+    if 'country' not in df.columns:
+        print("Geographic columns are not available.")
+        return
+
+    print("\nCustomers by country:")
+    print(df['country'].fillna('Unknown').value_counts().to_string())
+
+    if 'city_class' not in df.columns and {'country', 'city', 'population'}.issubset(df.columns):
+        city_reference = (
+            df[['country', 'city', 'population']]
+            .dropna(subset=['country', 'city', 'population'])
+            .groupby(['country', 'city'], as_index=False)['population']
+            .median()
+        )
+        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
+            pct=True,
+            method='average'
+        )
+        city_reference['city_class'] = np.where(
+            city_reference['country_rank'] >= 0.75,
+            'Major City',
+            'Small City'
+        )
+        df = df.merge(
+            city_reference[['country', 'city', 'city_class']],
+            on=['country', 'city'],
+            how='left'
+        )
+        df['city_class'] = df['city_class'].fillna('Unknown')
+
+    if 'city_class' in df.columns:
+        print("\nCity classification within each country:")
+        city_summary = pd.crosstab(
+            df['country'].fillna('Unknown'),
+            df['city_class'].fillna('Unknown')
+        )
+        print(city_summary.to_string())
+
+    geo_columns = [
+        column for column in ['latitude', 'longitude', 'population']
+        if column in df.columns
+    ]
+    if geo_columns:
+        print("\nGeographic data coverage:")
+        coverage = df[geo_columns].notna().mean().mul(100).round(1)
+        print(coverage.map(lambda value: f'{value}%').to_string())
+
+    if 'population' in df.columns:
+        print("\nPopulation by city class:")
+        print(
+            df.groupby('city_class', dropna=False)['population']
+            .median()
+            .sort_values(ascending=False)
+            .to_string()
+        )
+
+
+def analyze_geography_by_target(df, target_column):
+    """Compare purchase rate across the compact geographic features."""
+    print(f"\nGeographic purchase rates for {target_column}:")
+
+    if (
+        'city_class' not in df.columns and
+        {'country', 'city', 'population'}.issubset(df.columns)
+    ):
+        city_reference = (
+            df[['country', 'city', 'population']]
+            .dropna(subset=['country', 'city', 'population'])
+            .groupby(['country', 'city'], as_index=False)['population']
+            .median()
+        )
+        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
+            pct=True,
+            method='average'
+        )
+        city_reference['city_class'] = np.where(
+            city_reference['country_rank'] >= 0.75,
+            'Major City',
+            'Small City'
+        )
+        df = df.merge(
+            city_reference[['country', 'city', 'city_class']],
+            on=['country', 'city'],
+            how='left'
+        )
+        df['city_class'] = df['city_class'].fillna('Unknown')
+
+    for column in ['country', 'city_class']:
+        if column not in df.columns:
+            continue
+        purchase_rate = (
+            df.assign(**{column: df[column].fillna('Unknown')})
+            .groupby(column)[target_column]
+            .agg(['count', 'mean'])
+        )
+        purchase_rate['purchase_rate_pct'] = (purchase_rate['mean'] * 100).round(2)
+        print(f"\n{column}:")
+        print(
+            purchase_rate[['count', 'purchase_rate_pct']]
+            .sort_values('purchase_rate_pct', ascending=False)
+            .to_string()
+        )
+
+    if 'distance_to_major_city_km' in df.columns:
+        unknown_distance_count = df['distance_to_major_city_km'].lt(0).sum()
+        if unknown_distance_count:
+            print(f"  Unknown distance records: {unknown_distance_count}")
+        valid_distance_df = df[
+            df['distance_to_major_city_km'].ge(0)
+        ].copy()
+        distance_bins = pd.cut(
+            valid_distance_df['distance_to_major_city_km'],
+            bins=[-np.inf, 50, 150, 300, np.inf],
+            labels=['0-50 km', '50-150 km', '150-300 km', '300+ km']
+        )
+        distance_rates = valid_distance_df.groupby(
+            distance_bins, observed=False
+        )[target_column].agg(
+            count='size',
+            purchase_rate='mean'
+        )
+        distance_rates['purchase_rate_pct'] = (
+            distance_rates['purchase_rate'] * 100
+        ).round(2)
+        print("\nDistance to major city:")
+        print(distance_rates[['count', 'purchase_rate_pct']].to_string())
+
+
+def plot_geographic_distributions(df):
+    """Plot population and distance distributions for model customers."""
+    figures = [
+        ('population', 'Population distribution (log scale)', 'population_distribution.png'),
+        (
+            'distance_to_major_city_km',
+            'Distance to major city distribution',
+            'distance_to_major_city_distribution.png'
+        )
+    ]
+
+    for column, title, filename in figures:
+        if column not in df.columns:
+            continue
+        values = df[column].dropna()
+        if column == 'population':
+            values = np.log1p(values)
+            xlabel = 'log(1 + population)'
+        else:
+            values = values[values.ge(0)]
+            xlabel = 'Distance (km)'
+
+        plt.figure(figsize=(9, 5))
+        plt.hist(values, bins=30, edgecolor='black')
+        plt.title(title)
+        plt.xlabel(xlabel)
+        plt.ylabel('Customers')
+        plt.tight_layout()
+        output_path = DATA_DIR / filename
+        plt.savefig(output_path, dpi=180, bbox_inches='tight')
+        print(f"Saved: {output_path.name}")
+        plt.close()
 
 def analyze_target(df, target_column):
     """Analyze the target variable distribution."""
@@ -70,9 +243,21 @@ def analyze_features(df, target_columns):
     categorical_cols = df.select_dtypes(include=['object', 'str']).columns.tolist()
     
     # Remove target and ID columns
-    numeric_cols = [c for c in numeric_cols if c not in target_columns + ['CustomerID']]
+    numeric_cols = [
+        c for c in numeric_cols
+        if c not in target_columns + [
+            'CustomerID',
+            'latitude',
+            'longitude'
+        ]
+    ]
 
-    categorical_cols = [c for c in categorical_cols if c != 'AccountNumber']
+    # City names are intentionally excluded because the new geography uses
+    # country-relative city classes instead of hundreds of raw categories.
+    categorical_cols = [
+        c for c in categorical_cols
+        if c not in ['AccountNumber', 'city']
+    ]
     
     print(f"\nNumeric Features ({len(numeric_cols)}): {numeric_cols}")
     print(f"Categorical Features ({len(categorical_cols)}): {categorical_cols}")
@@ -98,26 +283,38 @@ def plot_distributions(df, numeric_cols, output_suffix):
     plt.close()
 
 def plot_correlation_matrix(df, numeric_cols, target_column, output_suffix):
-    """Plot correlation matrix."""
-    # Add target to correlation
-    cols = numeric_cols + [target_column]
-    
-    corr_matrix = df[cols].corr()
-    
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f')
-    plt.title('Feature Correlation Matrix')
+    """Plot a readable target-focused correlation matrix."""
+    corr_matrix = df[numeric_cols + [target_column]].corr()
+    target_corr = corr_matrix[target_column].drop(target_column).abs()
+    top_features = target_corr.sort_values(ascending=False).head(12).index.tolist()
+    focused_cols = top_features + [target_column]
+    focused_corr = corr_matrix.loc[focused_cols, focused_cols]
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        focused_corr,
+        annot=True,
+        fmt='.2f',
+        cmap='coolwarm',
+        center=0,
+        vmin=-1,
+        vmax=1,
+        square=True,
+        linewidths=0.5,
+        cbar_kws={'label': 'Correlation'}
+    )
+    plt.title(f'Top Feature Correlations - {target_column}')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     plt.tight_layout()
     output_path = DATA_DIR / f"correlation_matrix_{output_suffix}.png"
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(output_path, dpi=180, bbox_inches='tight')
     print(f"Saved: {output_path.name}")
     plt.close()
-    
-    # Print top correlations with target
-    target_corr = corr_matrix[target_column].drop(target_column).abs().sort_values(ascending=False)
+
     print("\nTop Correlations with Target:")
-    for feat, corr in target_corr.items():
-        print(f"  {feat}: {corr:.3f}")
+    for feat in target_corr.sort_values(ascending=False).head(12).index:
+        print(f"  {feat}: {corr_matrix.loc[feat, target_column]:.3f}")
 
 def plot_feature_vs_target(df, numeric_cols, target_column, output_suffix):
     """Plot features grouped by target."""
@@ -174,10 +371,14 @@ def generate_summary(df, target_column):
     high_value_purchase = high_value[target_column].mean() * 100
     print(f"High-Value Customer Purchase Rate: {high_value_purchase:.1f}%")
     
-    # Most valuable category
-    category_value = df.groupby('favorite_category', dropna=False)['total_spent'].mean()
-    print(f"\nAverage Spend by Category:")
-    print(category_value.sort_values(ascending=False))
+    # The engineered dataset contains one-hot category columns instead of the
+    # original favorite_category label.
+    if 'favorite_category' in df.columns:
+        category_value = df.groupby(
+            'favorite_category', dropna=False
+        )['total_spent'].mean()
+        print("\nAverage Spend by Category:")
+        print(category_value.sort_values(ascending=False))
 
 def main():
     print("Loading data...")
@@ -185,16 +386,31 @@ def main():
     
     basic_info(df)
     analyze_cohorts(df)
+    analyze_geography(df)
 
-    # Model-specific EDA: only customers with purchase history before the cutoff.
-    model_df = df[df['customer_cohort'].isin([
+    # Model-specific EDA uses engineered features, including distance to the
+    # nearest major city, and only customers with purchase history at cutoff.
+    model_df = load_engineered_data()
+    model_df = model_df[model_df['customer_cohort'].isin([
         'existing_returned',
         'existing_not_returned'
     ])].copy()
     print(f"\nModel population: {len(model_df)} existing customers")
 
+    raw_model_df = df[df['customer_cohort'].isin([
+        'existing_returned',
+        'existing_not_returned'
+    ])].copy()
+    distance_columns = ['CustomerID', 'distance_to_major_city_km']
+    raw_model_df = raw_model_df.merge(
+        model_df[distance_columns],
+        on='CustomerID',
+        how='left'
+    )
+
     target_columns = ['will_buy_soon', 'will_buy_again_6m']
     numeric_cols, categorical_cols = analyze_features(model_df, target_columns)
+    plot_geographic_distributions(model_df)
 
     for target_column in target_columns:
         target_counts = analyze_target(model_df, target_column)
@@ -205,6 +421,7 @@ def main():
         plot_correlation_matrix(model_df, numeric_cols, target_column, output_suffix)
         plot_feature_vs_target(model_df, numeric_cols, target_column, output_suffix)
         plot_categorical_analysis(model_df, categorical_cols, target_column)
+        analyze_geography_by_target(raw_model_df, target_column)
         generate_summary(model_df, target_column)
     
     print("\n" + "=" * 60)

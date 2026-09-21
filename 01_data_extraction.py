@@ -37,38 +37,54 @@ WITH Fechas AS (
         MAX(OrderDate) AS FechaMaximaOriginal,
         CAST(GETDATE() AS date) AS FechaHoy,
         DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)) AS DiasDesfase,
-        DATEADD(MONTH, -6, CAST(GETDATE() AS date)) AS FechaCorte
+            DATEADD(MONTH, -6, CAST(GETDATE() AS date)) AS FechaCorte,
+            DATEADD(
+                DAY,
+                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
+                DATEADD(MONTH, -6, CAST(GETDATE() AS date))
+            ) AS FechaCorteOriginal,
+            DATEADD(
+                DAY,
+                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
+                DATEADD(DAY, 90, DATEADD(MONTH, -6, CAST(GETDATE() AS date)))
+            ) AS Fecha90Original,
+            DATEADD(
+                DAY,
+                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
+                CAST(GETDATE() AS date)
+            ) AS FechaHoyOriginal
     FROM Sales.SalesOrderHeader
 ),
-ComprasHistoricas AS (
+FavoriteCategories AS (
     SELECT
-        c.CustomerID,
-        c.AccountNumber,
-        customer_address.City AS city,
+        soh.CustomerID,
+        pc.Name,
+        ROW_NUMBER() OVER (
+            PARTITION BY soh.CustomerID
+            ORDER BY COUNT(*) DESC, pc.Name
+        ) AS category_rank
+    FROM Sales.SalesOrderHeader soh
+    JOIN Sales.SalesOrderDetail sod
+        ON soh.SalesOrderID = sod.SalesOrderID
+    JOIN Production.Product p
+        ON sod.ProductID = p.ProductID
+    JOIN Production.ProductSubcategory psc
+        ON p.ProductSubcategoryID = psc.ProductSubcategoryID
+    JOIN Production.ProductCategory pc
+        ON psc.ProductCategoryID = pc.ProductCategoryID
+    CROSS JOIN Fechas f
+    WHERE soh.OrderDate <= f.FechaCorteOriginal
+    GROUP BY soh.CustomerID, pc.Name
+),
+HistoricalOrders AS (
+    SELECT
+        soh.CustomerID,
         COUNT(DISTINCT soh.SalesOrderID) AS total_orders,
         SUM(sod.LineTotal) AS total_spent,
         AVG(sod.LineTotal) AS avg_order_value,
-        DATEDIFF(
-            DAY,
-            DATEADD(DAY, f.DiasDesfase, MAX(soh.OrderDate)),
-            f.FechaHoy
-        ) AS days_since_last_purchase,
-        DATEDIFF(
-            DAY,
-            DATEADD(DAY, f.DiasDesfase, MIN(soh.OrderDate)),
-            f.FechaHoy
-        ) AS days_since_first_purchase,
+        MIN(soh.OrderDate) AS first_order_date,
+        MAX(soh.OrderDate) AS last_order_date,
         COUNT(DISTINCT sod.ProductID) AS unique_products,
-        (SELECT TOP 1 pc.Name
-         FROM Sales.SalesOrderHeader soh2
-         JOIN Sales.SalesOrderDetail sod2 ON soh2.SalesOrderID = sod2.SalesOrderID
-         JOIN Production.Product p2 ON sod2.ProductID = p2.ProductID
-         JOIN Production.ProductSubcategory psc2 ON p2.ProductSubcategoryID = psc2.ProductSubcategoryID
-         JOIN Production.ProductCategory pc ON psc2.ProductCategoryID = pc.ProductCategoryID
-         WHERE soh2.CustomerID = c.CustomerID
-           AND DATEADD(DAY, f.DiasDesfase, soh2.OrderDate) <= f.FechaCorte
-         GROUP BY pc.Name
-         ORDER BY COUNT(*) DESC) AS favorite_category,
         CASE
             WHEN COUNT(DISTINCT soh.SalesOrderID) > 1
             THEN DATEDIFF(DAY, MIN(soh.OrderDate), MAX(soh.OrderDate)) /
@@ -81,45 +97,88 @@ ComprasHistoricas AS (
                  DATEDIFF(MONTH, MIN(soh.OrderDate), MAX(soh.OrderDate))
             ELSE COUNT(DISTINCT soh.SalesOrderID)
         END AS orders_per_month
+    FROM Sales.SalesOrderHeader soh
+    JOIN Sales.SalesOrderDetail sod
+        ON soh.SalesOrderID = sod.SalesOrderID
+    CROSS JOIN Fechas f
+    WHERE soh.OrderDate <= f.FechaCorteOriginal
+    GROUP BY soh.CustomerID
+),
+ComprasHistoricas AS (
+    SELECT
+        c.CustomerID,
+        c.AccountNumber,
+        COALESCE(person_address.City, store_address.City, geo.City) AS city,
+        COALESCE(person_address.Country, store_address.Country, geo.county_name) AS country,
+        COALESCE(person_address.PostalCode, store_address.PostalCode, geo.PostalCode) AS postal_code,
+        geo.Latitude AS latitude,
+        geo.Longitude AS longitude,
+        geo.population AS population,
+        COALESCE(ho.total_orders, 0) AS total_orders,
+        COALESCE(ho.total_spent, 0) AS total_spent,
+        COALESCE(ho.avg_order_value, 0) AS avg_order_value,
+        COALESCE(DATEDIFF(DAY, ho.last_order_date, f.FechaHoyOriginal), 0) AS days_since_last_purchase,
+        COALESCE(DATEDIFF(DAY, ho.first_order_date, f.FechaHoyOriginal), 0) AS days_since_first_purchase,
+        COALESCE(ho.unique_products, 0) AS unique_products,
+        favorite_category.Name AS favorite_category,
+        COALESCE(ho.avg_days_between_orders, 9999) AS avg_days_between_orders,
+        COALESCE(ho.orders_per_month, 0) AS orders_per_month
     FROM Sales.Customer c
     CROSS JOIN Fechas f
     OUTER APPLY (
         SELECT TOP 1
-            a.City
+            a.City,
+            a.PostalCode,
+            COALESCE(cr.Name, 'Unknown') AS Country
         FROM Person.BusinessEntityAddress bea
         JOIN Person.Address a
             ON bea.AddressID = a.AddressID
+        LEFT JOIN Person.StateProvince sp
+            ON a.StateProvinceID = sp.StateProvinceID
+        LEFT JOIN Person.CountryRegion cr
+            ON sp.CountryRegionCode = cr.CountryRegionCode
         WHERE bea.BusinessEntityID = c.PersonID
         ORDER BY bea.AddressID
-    ) AS customer_address
-    LEFT JOIN Sales.SalesOrderHeader soh
-        ON c.CustomerID = soh.CustomerID
-        AND DATEADD(DAY, f.DiasDesfase, soh.OrderDate) <= f.FechaCorte
-    LEFT JOIN Sales.SalesOrderDetail sod
-        ON soh.SalesOrderID = sod.SalesOrderID
+    ) AS person_address
+    OUTER APPLY (
+        SELECT TOP 1
+            a.City,
+            a.PostalCode,
+            COALESCE(cr.Name, 'Unknown') AS Country
+        FROM Person.BusinessEntityAddress bea
+        JOIN Person.Address a
+            ON bea.AddressID = a.AddressID
+        LEFT JOIN Person.StateProvince sp
+            ON a.StateProvinceID = sp.StateProvinceID
+        LEFT JOIN Person.CountryRegion cr
+            ON sp.CountryRegionCode = cr.CountryRegionCode
+        WHERE bea.BusinessEntityID = c.StoreID
+        ORDER BY bea.AddressID
+    ) AS store_address
+    LEFT JOIN GeoData.dbo.CustomerPopulation AS geo
+        ON geo.CustomerID = c.CustomerID
+    LEFT JOIN FavoriteCategories AS favorite_category
+        ON favorite_category.CustomerID = c.CustomerID
+        AND favorite_category.category_rank = 1
+    LEFT JOIN HistoricalOrders ho
+        ON ho.CustomerID = c.CustomerID
     WHERE c.CustomerID IS NOT NULL
-    GROUP BY
-        c.CustomerID,
-        c.AccountNumber,
-        customer_address.City,
-        f.FechaCorte,
-        f.DiasDesfase,
-        f.FechaHoy
 ),
 ComprasFuturas AS (
     SELECT
         soh.CustomerID,
         COUNT(DISTINCT CASE
-            WHEN DATEADD(DAY, f.DiasDesfase, soh.OrderDate)
-                 <= DATEADD(DAY, 90, f.FechaCorte)
+                        WHEN soh.OrderDate <= f.Fecha90Original
             THEN soh.SalesOrderID
         END) AS future_orders_90d,
         COUNT(DISTINCT soh.SalesOrderID) AS future_orders_6m
     FROM Sales.SalesOrderHeader soh
     CROSS JOIN Fechas f
-        WHERE DATEADD(DAY, f.DiasDesfase, soh.OrderDate) > f.FechaCorte
-            AND DATEADD(DAY, f.DiasDesfase, soh.OrderDate) <= f.FechaHoy
-    GROUP BY soh.CustomerID
+    WHERE soh.OrderDate > f.FechaCorteOriginal
+        AND soh.OrderDate <= f.FechaHoyOriginal
+    GROUP BY
+        soh.CustomerID,
+        f.Fecha90Original
 )
 SELECT
     h.*,
@@ -175,7 +234,6 @@ def main():
         print(f"Data saved to {output_path}")
         print("\nTarget Distribution - 6 months:")
         print(df['will_buy_again_6m'].value_counts(normalize=True))
-        conn.close()
 
     except Exception as error:
         print(f"Error: {error}")
