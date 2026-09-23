@@ -12,6 +12,7 @@ from sklearn.metrics import (
     classification_report, confusion_matrix, roc_curve, auc,
     precision_recall_curve, average_precision_score
 )
+from sklearn.calibration import calibration_curve
 
 DATA_DIR = Path(__file__).parent / "data"
 MODELS_DIR = Path(__file__).parent / "models"
@@ -132,6 +133,70 @@ def plot_feature_importance(model, feature_cols, model_name):
         for i in indices:
             print(f"  {feature_cols[i]}: {importances[i]:.4f}")
 
+def plot_model_comparison():
+    """Compare model F1 and ROC-AUC for the six-month horizon."""
+    rankings_path = DATA_DIR / 'model_rankings_6m.csv'
+    if not rankings_path.exists():
+        print(f"Skipping model comparison; missing {rankings_path.name}")
+        return
+
+    rankings = pd.read_csv(rankings_path).sort_values('F1-Mean')
+    ax = rankings.plot(
+        x='Model',
+        y=['F1-Mean', 'ROC-AUC'],
+        kind='barh',
+        figsize=(10, 6),
+        color=['#2f6f9f', '#d9822b']
+    )
+    ax.set_title('Model Comparison - Six-Month Horizon')
+    ax.set_xlabel('Score')
+    ax.set_ylabel('Model')
+    ax.set_xlim(0, 1)
+    plt.legend(title='Metric')
+    plt.tight_layout()
+    output_path = DATA_DIR / 'model_comparison_6m.png'
+    plt.savefig(output_path, dpi=180, bbox_inches='tight')
+    print(f"Saved: {output_path.name}")
+    plt.close()
+
+
+def plot_probability_calibration(y_test, y_proba, model_name):
+    """Plot predicted probabilities against observed positive rates."""
+    fraction_positive, mean_predicted = calibration_curve(
+        y_test, y_proba, n_bins=10, strategy='quantile'
+    )
+    plt.figure(figsize=(8, 6))
+    plt.plot(mean_predicted, fraction_positive, marker='o', label=model_name)
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect calibration')
+    plt.xlabel('Mean predicted probability')
+    plt.ylabel('Observed purchase rate')
+    plt.title(f'Probability Calibration - {model_name}')
+    plt.legend()
+    plt.tight_layout()
+    output_path = DATA_DIR / 'probability_calibration.png'
+    plt.savefig(output_path, dpi=180, bbox_inches='tight')
+    print(f"Saved: {output_path.name}")
+    plt.close()
+
+
+def plot_probability_separation(y_test, y_proba, model_name):
+    """Plot predicted probability distributions by observed outcome."""
+    y_test_array = np.asarray(y_test)
+    plt.figure(figsize=(9, 5))
+    plt.hist(y_proba[y_test_array == 0], bins=25, alpha=0.65, label='No repurchase')
+    plt.hist(y_proba[y_test_array == 1], bins=25, alpha=0.65, label='Repurchase')
+    plt.axvline(0.5, linestyle='--', color='black', label='Decision threshold')
+    plt.xlabel('Predicted probability of repurchase within six months')
+    plt.ylabel('Customers')
+    plt.title(f'Predicted Probability Separation - {model_name}')
+    plt.legend()
+    plt.tight_layout()
+    output_path = DATA_DIR / 'predicted_probability_separation.png'
+    plt.savefig(output_path, dpi=180, bbox_inches='tight')
+    print(f"Saved: {output_path.name}")
+    plt.close()
+
+
 def generate_business_insights(y_test, y_pred, y_proba, model_name):
     """Generate business-focused insights."""
     print("\n" + "=" * 60)
@@ -193,6 +258,9 @@ def main():
     roc_auc = plot_roc_curve(y_test, y_proba, model_name)
     avg_precision = plot_precision_recall_curve(y_test, y_proba, model_name)
     plot_feature_importance(model, feature_cols, model_name)
+    plot_model_comparison()
+    plot_probability_calibration(y_test, y_proba, model_name)
+    plot_probability_separation(y_test, y_proba, model_name)
     
     # Calculate final metrics
     accuracy = (y_pred == y_test).mean()

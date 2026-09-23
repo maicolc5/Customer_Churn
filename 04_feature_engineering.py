@@ -210,18 +210,8 @@ def encode_new_categorical(df):
     """Encode newly created categorical features."""
     print("\nEncoding new categorical features...")
     
-    # geographic_area is retained only for analysis; its many categories are
-    # intentionally excluded from the main model feature set.
-    df = df.drop(
-        columns=[
-            'city',
-            'city_class',
-            'geographic_area',
-            'latitude',
-            'longitude'
-        ],
-        errors='ignore'
-    )
+    # Keep country as the only geographic predictor. Other geographic fields
+    # remain available for analysis but are excluded from model features.
     regular_categorical_cols = ['recency_segment', 'spending_tier']
     df_encoded = pd.get_dummies(
         df,
@@ -240,15 +230,11 @@ def encode_new_categorical(df):
         [df_encoded.drop(columns=['country']), country_dummies],
         axis=1
     )
-
-    # Keep Australia as an explicit country dummy. Canada is the smallest
-    # represented country and is used as the reference category instead.
     df_encoded = df_encoded.drop(
         columns=['country_Canada', 'country_Unknown'],
         errors='ignore'
     )
 
-    # plus the country dummies
     encoded_count = len(regular_categorical_cols) + 1
     print(f"Encoded {encoded_count} categorical columns")
     return df_encoded
@@ -282,10 +268,25 @@ def main():
     print(f"\nSaved engineered data to {output_path}")
     
     # Update feature list
-    feature_cols = [c for c in df.columns if c not in [
-        'CustomerID', 'AccountNumber', 'will_buy_soon',
-        'will_buy_again_6m', 'customer_cohort'
-    ]]
+    excluded_model_columns = {
+        'CustomerID',
+        'AccountNumber',
+        'will_buy_soon',
+        'will_buy_again_6m',
+        'customer_cohort',
+        'city',
+        'country',
+        'city_class',
+        'geographic_area',
+        'latitude',
+        'longitude',
+        'population',
+        'population_missing',
+        'distance_to_major_city_km',
+        'has_geographic_match',
+        'city_class_major'
+    }
+    feature_cols = [c for c in df.columns if c not in excluded_model_columns]
     joblib.dump(feature_cols, MODELS_DIR / "feature_columns.pkl")
     print(f"Updated feature list: {len(feature_cols)} features")
     

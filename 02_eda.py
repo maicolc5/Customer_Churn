@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import joblib
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -44,172 +45,34 @@ def analyze_cohorts(df):
         print(f"  {cohort}: {count} ({cohort_pct[cohort]:.1f}%)")
 
 
-def analyze_geography(df):
-    """Summarize country-relative city classes and geodata coverage."""
-    print("\n" + "=" * 60)
-    print("GEOGRAPHIC ANALYSIS")
-    print("=" * 60)
-
+def plot_country_purchase_rate(df, target_column, output_suffix):
+    """Plot purchase rate by country for the model population."""
     if 'country' not in df.columns:
-        print("Geographic columns are not available.")
         return
 
-    print("\nCustomers by country:")
-    print(df['country'].fillna('Unknown').value_counts().to_string())
+    country_rates = (
+        df.assign(country=df['country'].fillna('Unknown'))
+        .groupby('country')[target_column]
+        .mean()
+        .sort_values(ascending=False)
+        .mul(100)
+    )
 
-    if 'city_class' not in df.columns and {'country', 'city', 'population'}.issubset(df.columns):
-        city_reference = (
-            df[['country', 'city', 'population']]
-            .dropna(subset=['country', 'city', 'population'])
-            .groupby(['country', 'city'], as_index=False)['population']
-            .median()
-        )
-        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
-            pct=True,
-            method='average'
-        )
-        city_reference['city_class'] = np.where(
-            city_reference['country_rank'] >= 0.75,
-            'Major City',
-            'Small City'
-        )
-        df = df.merge(
-            city_reference[['country', 'city', 'city_class']],
-            on=['country', 'city'],
-            how='left'
-        )
-        df['city_class'] = df['city_class'].fillna('Unknown')
+    plt.figure(figsize=(9, 5))
+    country_rates.plot(kind='bar', color='#2f6f9f', edgecolor='black')
+    plt.title(f'{target_column} Purchase Rate by Country')
+    plt.xlabel('Country')
+    plt.ylabel('Purchase rate (%)')
+    plt.xticks(rotation=35, ha='right')
+    plt.ylim(0, 100)
+    plt.tight_layout()
+    output_path = DATA_DIR / f'purchase_rate_by_country_{output_suffix}.png'
+    plt.savefig(output_path, dpi=180, bbox_inches='tight')
+    print(f'Saved: {output_path.name}')
+    plt.close()
 
-    if 'city_class' in df.columns:
-        print("\nCity classification within each country:")
-        city_summary = pd.crosstab(
-            df['country'].fillna('Unknown'),
-            df['city_class'].fillna('Unknown')
-        )
-        print(city_summary.to_string())
-
-    geo_columns = [
-        column for column in ['latitude', 'longitude', 'population']
-        if column in df.columns
-    ]
-    if geo_columns:
-        print("\nGeographic data coverage:")
-        coverage = df[geo_columns].notna().mean().mul(100).round(1)
-        print(coverage.map(lambda value: f'{value}%').to_string())
-
-    if 'population' in df.columns:
-        print("\nPopulation by city class:")
-        print(
-            df.groupby('city_class', dropna=False)['population']
-            .median()
-            .sort_values(ascending=False)
-            .to_string()
-        )
-
-
-def analyze_geography_by_target(df, target_column):
-    """Compare purchase rate across the compact geographic features."""
-    print(f"\nGeographic purchase rates for {target_column}:")
-
-    if (
-        'city_class' not in df.columns and
-        {'country', 'city', 'population'}.issubset(df.columns)
-    ):
-        city_reference = (
-            df[['country', 'city', 'population']]
-            .dropna(subset=['country', 'city', 'population'])
-            .groupby(['country', 'city'], as_index=False)['population']
-            .median()
-        )
-        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
-            pct=True,
-            method='average'
-        )
-        city_reference['city_class'] = np.where(
-            city_reference['country_rank'] >= 0.75,
-            'Major City',
-            'Small City'
-        )
-        df = df.merge(
-            city_reference[['country', 'city', 'city_class']],
-            on=['country', 'city'],
-            how='left'
-        )
-        df['city_class'] = df['city_class'].fillna('Unknown')
-
-    for column in ['country', 'city_class']:
-        if column not in df.columns:
-            continue
-        purchase_rate = (
-            df.assign(**{column: df[column].fillna('Unknown')})
-            .groupby(column)[target_column]
-            .agg(['count', 'mean'])
-        )
-        purchase_rate['purchase_rate_pct'] = (purchase_rate['mean'] * 100).round(2)
-        print(f"\n{column}:")
-        print(
-            purchase_rate[['count', 'purchase_rate_pct']]
-            .sort_values('purchase_rate_pct', ascending=False)
-            .to_string()
-        )
-
-    if 'distance_to_major_city_km' in df.columns:
-        unknown_distance_count = df['distance_to_major_city_km'].lt(0).sum()
-        if unknown_distance_count:
-            print(f"  Unknown distance records: {unknown_distance_count}")
-        valid_distance_df = df[
-            df['distance_to_major_city_km'].ge(0)
-        ].copy()
-        distance_bins = pd.cut(
-            valid_distance_df['distance_to_major_city_km'],
-            bins=[-np.inf, 50, 150, 300, np.inf],
-            labels=['0-50 km', '50-150 km', '150-300 km', '300+ km']
-        )
-        distance_rates = valid_distance_df.groupby(
-            distance_bins, observed=False
-        )[target_column].agg(
-            count='size',
-            purchase_rate='mean'
-        )
-        distance_rates['purchase_rate_pct'] = (
-            distance_rates['purchase_rate'] * 100
-        ).round(2)
-        print("\nDistance to major city:")
-        print(distance_rates[['count', 'purchase_rate_pct']].to_string())
-
-
-def plot_geographic_distributions(df):
-    """Plot population and distance distributions for model customers."""
-    figures = [
-        ('population', 'Population distribution (log scale)', 'population_distribution.png'),
-        (
-            'distance_to_major_city_km',
-            'Distance to major city distribution',
-            'distance_to_major_city_distribution.png'
-        )
-    ]
-
-    for column, title, filename in figures:
-        if column not in df.columns:
-            continue
-        values = df[column].dropna()
-        if column == 'population':
-            values = np.log1p(values)
-            xlabel = 'log(1 + population)'
-        else:
-            values = values[values.ge(0)]
-            xlabel = 'Distance (km)'
-
-        plt.figure(figsize=(9, 5))
-        plt.hist(values, bins=30, edgecolor='black')
-        plt.title(title)
-        plt.xlabel(xlabel)
-        plt.ylabel('Customers')
-        plt.tight_layout()
-        output_path = DATA_DIR / filename
-        plt.savefig(output_path, dpi=180, bbox_inches='tight')
-        print(f"Saved: {output_path.name}")
-        plt.close()
+    print('\nPurchase rate by country:')
+    print(country_rates.round(2).to_string())
 
 def analyze_target(df, target_column):
     """Analyze the target variable distribution."""
@@ -386,11 +249,18 @@ def main():
     
     basic_info(df)
     analyze_cohorts(df)
-    analyze_geography(df)
-
-    # Model-specific EDA uses engineered features, including distance to the
-    # nearest major city, and only customers with purchase history at cutoff.
+    # Model-specific EDA uses exactly the same feature list as model selection.
+    # This prevents excluded geographic fields from influencing conclusions.
     model_df = load_engineered_data()
+    model_features = joblib.load(
+        Path(__file__).parent / 'models' / 'feature_columns.pkl'
+    )
+    model_columns = model_features + [
+        'customer_cohort',
+        'will_buy_soon',
+        'will_buy_again_6m'
+    ]
+    model_df = model_df[model_columns]
     model_df = model_df[model_df['customer_cohort'].isin([
         'existing_returned',
         'existing_not_returned'
@@ -401,16 +271,9 @@ def main():
         'existing_returned',
         'existing_not_returned'
     ])].copy()
-    distance_columns = ['CustomerID', 'distance_to_major_city_km']
-    raw_model_df = raw_model_df.merge(
-        model_df[distance_columns],
-        on='CustomerID',
-        how='left'
-    )
 
     target_columns = ['will_buy_soon', 'will_buy_again_6m']
     numeric_cols, categorical_cols = analyze_features(model_df, target_columns)
-    plot_geographic_distributions(model_df)
 
     for target_column in target_columns:
         target_counts = analyze_target(model_df, target_column)
@@ -421,7 +284,7 @@ def main():
         plot_correlation_matrix(model_df, numeric_cols, target_column, output_suffix)
         plot_feature_vs_target(model_df, numeric_cols, target_column, output_suffix)
         plot_categorical_analysis(model_df, categorical_cols, target_column)
-        analyze_geography_by_target(raw_model_df, target_column)
+        plot_country_purchase_rate(raw_model_df, target_column, output_suffix)
         generate_summary(model_df, target_column)
     
     print("\n" + "=" * 60)
