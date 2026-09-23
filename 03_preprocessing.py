@@ -17,6 +17,31 @@ def load_data():
     print(f"Loaded {len(df)} rows")
     return df
 
+
+def validate_geographic_columns(df):
+    """Validate columns required by the geographic feature pipeline."""
+    required_columns = [
+        'city',
+        'country',
+        'population',
+        'latitude',
+        'longitude'
+    ]
+    missing_columns = [
+        column for column in required_columns
+        if column not in df.columns
+    ]
+    if missing_columns:
+        raise KeyError(
+            "Missing required geographic columns: "
+            + ", ".join(missing_columns)
+        )
+
+    print("\nGeographic column validation:")
+    for column in required_columns:
+        missing_count = int(df[column].isna().sum())
+        print(f"  {column}: present, missing values={missing_count}")
+
 def handle_missing_values(df):
     """Handle missing values."""
     print("\nHandling missing values...")
@@ -92,47 +117,44 @@ def build_major_city(df):
     """
     print("\nClassifying cities by country...")
 
-    if 'city' not in df.columns:
-        print("No city column found; skipping geospatial grouping.")
-        return df
-
     df['city'] = df['city'].fillna('Unknown').astype(str).str.strip().str.title()
-    df['city'] = df['city'].replace(['Unknown', 'Uknow', 'N/A', ''], 'Other')
-
-    if 'country' in df.columns:
-        df['country'] = df['country'].fillna('Unknown').astype(str).str.strip().str.title()
+    df['city'] = df['city'].replace(['Uknown', 'Uknow', 'N/A', ''], 'Unknown')
+    df['country'] = df['country'].fillna('Unknown').astype(str).str.strip().str.title()
+    df['country'] = df['country'].replace(['Uknown', 'Uknow', 'N/A', ''], 'Unknown')
 
     # Classify one population value per city so customer volume does not
     # distort the country-relative ranking.
+    df['population_missing'] = df['population'].isna().astype(int)
     df['city_class'] = 'Unknown'
-    if 'country' in df.columns and 'population' in df.columns:
-        city_reference = (
-            df.loc[
-                (df['country'] != 'Unknown') &
-                (df['city'] != 'Other') &
-                df['population'].notna(),
-                ['country', 'city', 'population']
-            ]
-            .groupby(['country', 'city'], as_index=False)['population']
-            .median()
-        )
-        city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
-            pct=True,
-            method='average'
-        )
-        city_reference['city_class'] = np.where(
-            city_reference['country_rank'] >= 0.75,
-            'Major City',
-            'Small City'
-        )
-        class_map = city_reference.set_index(['country', 'city'])['city_class']
-        df['city_class'] = [
-            class_map.get((country, city), 'Unknown')
-            for country, city in zip(df['country'], df['city'])
+    city_reference = (
+        df.loc[
+            (df['country'] != 'Unknown') &
+            (df['city'] != 'Unknown') &
+            df['population'].notna(),
+            ['country', 'city', 'population']
         ]
+        .groupby(['country', 'city'], as_index=False)['population']
+        .median()
+    )
+    city_reference['country_rank'] = city_reference.groupby('country')['population'].rank(
+        pct=True,
+        method='average'
+    )
+    city_reference['city_class'] = np.where(
+        city_reference['country_rank'] >= 0.75,
+        'Major City',
+        'Small City'
+    )
+    class_map = city_reference.set_index(['country', 'city'])['city_class']
+    df['city_class'] = [
+        class_map.get((country, city), 'Unknown')
+        for country, city in zip(df['country'], df['city'])
+    ]
 
     df['city_class'] = df['city_class'].fillna('Unknown')
-    if 'population' in df.columns and df['population'].isna().any():
+    if df['population'].isna().any():
+        # Impute only for model compatibility; population_missing preserves
+        # the fact that the original population was unavailable.
         df['population'] = df['population'].fillna(df['population'].median())
     print(f"  Final city classes: {df['city_class'].nunique()}")
     print("  City-class distribution by country:")
@@ -193,6 +215,7 @@ def main():
     
     # Load data
     df = load_data()
+    validate_geographic_columns(df)
 
     # Create a new feature indicating if the customer has any purchase history, 
     # to identify customers with no prior purchases. This can be useful for modeling and segmentation.
