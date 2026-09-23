@@ -9,13 +9,15 @@ import joblib
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 import warnings
 
-# warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')
 
 DATA_DIR = Path(__file__).parent / "data"
 MODELS_DIR = Path(__file__).parent / "models"
@@ -45,13 +47,26 @@ def load_data(target_column):
 def get_models():
     """Define models to compare."""
     models = {
-        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+        'Logistic Regression': Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', LogisticRegression(max_iter=2000, random_state=42))
+        ]),
         'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
         'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, random_state=42),
-        'XGBoost': XGBClassifier(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='logloss'),
+        'XGBoost': XGBClassifier(
+            n_estimators=100,
+            random_state=42,
+            eval_metric='logloss'
+        ),
         'LightGBM': LGBMClassifier(n_estimators=100, random_state=42, verbose=-1),
-        'SVM': SVC(kernel='rbf', random_state=42),
-        'KNN': KNeighborsClassifier(n_neighbors=5)
+        'SVM': Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', SVC(kernel='rbf', random_state=42))
+        ]),
+        'KNN': Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', KNeighborsClassifier(n_neighbors=5))
+        ])
     }
     return models
 
@@ -118,10 +133,6 @@ def rank_models(results):
     print(f"\nBest Model: {best_model_name} (F1: {best_f1:.4f})")
     
     return df_rankings, best_model_name
-
-def select_best_model(best_model_name, models):
-    """Return the best model instance."""
-    return models[best_model_name]
 
 def main():
     print("=" * 60)
