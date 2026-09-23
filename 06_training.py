@@ -11,8 +11,10 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 import warnings
+
 warnings.filterwarnings('ignore')
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -69,7 +71,7 @@ def get_model_and_params(model_name):
             }
         },
         'XGBoost': {
-            'model': XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss'),
+            'model': XGBClassifier(random_state=42, eval_metric='logloss'),
             'params': {
                 'n_estimators': [100, 200],
                 'learning_rate': [0.01, 0.1, 0.2],
@@ -89,15 +91,25 @@ def get_model_and_params(model_name):
             }
         },
         'Logistic Regression': {
-            'model': LogisticRegression(random_state=42, max_iter=1000),
+            'model': Pipeline([
+                ('scaler', StandardScaler()),
+                ('model', LogisticRegression(random_state=42, max_iter=2000))
+            ]),
             'params': {
-                'C': [0.01, 0.1, 1, 10, 100],
-                'penalty': ['l1', 'l2'],
-                'solver': ['liblinear', 'saga']
+                'model__C': [0.01, 0.1, 1, 10, 100],
+                'model__penalty': ['l1', 'l2'],
+                'model__solver': ['liblinear', 'saga']
             }
         }
     }
-    return models_and_params.get(model_name, models_and_params['Random Forest'])
+    if model_name not in models_and_params:
+        available_models = ', '.join(models_and_params)
+        raise ValueError(
+            f"Unknown model '{model_name}'. "
+            f"Available models: {available_models}"
+        )
+
+    return models_and_params[model_name]
 
 def train_with_gridsearch(X_train, y_train, model_name):
     """Train model with grid search cross-validation."""
