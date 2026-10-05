@@ -32,36 +32,33 @@ def get_connection():
 def extract_customer_features(conn):
     """Extract historical features and future purchases around a cutoff."""
     query = """
+-------FECHA CORTE--------
+
 WITH Fechas AS (
     SELECT
         MAX(OrderDate) AS FechaMaximaOriginal,
         CAST(GETDATE() AS date) AS FechaHoy,
         DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)) AS DiasDesfase,
             DATEADD(MONTH, -6, CAST(GETDATE() AS date)) AS FechaCorte,
-            DATEADD(
-                DAY,
-                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
-                DATEADD(MONTH, -6, CAST(GETDATE() AS date))
-            ) AS FechaCorteOriginal,
-            DATEADD(
-                DAY,
-                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
-                DATEADD(DAY, 90, DATEADD(MONTH, -6, CAST(GETDATE() AS date)))
-            ) AS Fecha90Original,
-            DATEADD(
-                DAY,
-                -DATEDIFF(DAY, MAX(OrderDate), CAST(GETDATE() AS date)),
-                CAST(GETDATE() AS date)
-            ) AS FechaHoyOriginal
+
+                DATEADD(MONTH, -6, MAX(OrderDate))
+             AS FechaCorteOriginal,
+
+                DATEADD(DAY, 90, DATEADD(MONTH, -6, MAX(OrderDate))
+            ) AS Fecha90Original
+
     FROM Sales.SalesOrderHeader
-),
+
+   ),
+-------APARTADO CATEGORIA FAVORITA--------
+
 FavoriteCategories AS (
     SELECT
         soh.CustomerID,
         pc.Name,
         ROW_NUMBER() OVER (
             PARTITION BY soh.CustomerID
-            ORDER BY COUNT(*) DESC, pc.Name
+            ORDER BY COUNT(*) DESC, NEWID()
         ) AS category_rank
     FROM Sales.SalesOrderHeader soh
     JOIN Sales.SalesOrderDetail sod
@@ -74,9 +71,27 @@ FavoriteCategories AS (
         ON psc.ProductCategoryID = pc.ProductCategoryID
     CROSS JOIN Fechas f
     WHERE soh.OrderDate <= f.FechaCorteOriginal
-    GROUP BY soh.CustomerID, pc.Name
+    GROUP BY soh.CustomerID, pc.Name),
+
+-------APARTADO ORDENES--------
+FechasOrdenes AS (
+    -- 1. Obtenemos solo las órdenes únicas por cliente con su fecha
+    SELECT
+        CustomerID,
+        SalesOrderID,
+        OrderDate,
+        DATEDIFF(
+            DAY,
+            LAG(OrderDate) OVER (PARTITION BY CustomerID ORDER BY OrderDate),
+            OrderDate
+        ) AS dias_desde_orden_anterior
+    FROM Sales.SalesOrderHeader
+    CROSS JOIN Fechas f
+    WHERE OrderDate <= f.FechaCorteOriginal
+    GROUP BY CustomerID, SalesOrderID, OrderDate
 ),
-HistoricalOrders AS (
+MetricasTotales AS (
+    -- 2. Calculamos los totales agregados por línea e integración de las órdenes
     SELECT
         soh.CustomerID,
         COUNT(DISTINCT soh.SalesOrderID) AS total_orders,
@@ -84,26 +99,55 @@ HistoricalOrders AS (
         AVG(sod.LineTotal) AS avg_order_value,
         MIN(soh.OrderDate) AS first_order_date,
         MAX(soh.OrderDate) AS last_order_date,
-        COUNT(DISTINCT sod.ProductID) AS unique_products,
-        CASE
-            WHEN COUNT(DISTINCT soh.SalesOrderID) > 1
-            THEN DATEDIFF(DAY, MIN(soh.OrderDate), MAX(soh.OrderDate)) /
-                 (COUNT(DISTINCT soh.SalesOrderID) - 1.0)
-            ELSE 9999
-        END AS avg_days_between_orders,
-        CASE
-            WHEN DATEDIFF(MONTH, MIN(soh.OrderDate), MAX(soh.OrderDate)) > 0
-            THEN COUNT(DISTINCT soh.SalesOrderID) * 1.0 /
-                 DATEDIFF(MONTH, MIN(soh.OrderDate), MAX(soh.OrderDate))
-            ELSE COUNT(DISTINCT soh.SalesOrderID)
-        END AS orders_per_month
+        COUNT(DISTINCT sod.ProductID) AS unique_products
     FROM Sales.SalesOrderHeader soh
-    JOIN Sales.SalesOrderDetail sod
-        ON soh.SalesOrderID = sod.SalesOrderID
+    JOIN Sales.SalesOrderDetail sod ON soh.SalesOrderID = sod.SalesOrderID
     CROSS JOIN Fechas f
     WHERE soh.OrderDate <= f.FechaCorteOriginal
     GROUP BY soh.CustomerID
 ),
+
+HistoricalOrders AS (
+SELECT
+    m.CustomerID,
+    m.total_orders,
+    m.total_spent,
+
+    -- Ticket Promedio Real por Orden (no por línea de detalle)
+    m.total_spent * 1.0 / m.total_orders AS avg_order_value,
+
+    m.first_order_date,
+    m.last_order_date,
+    m.unique_products,
+
+    -- Promedio Real de Días entre Órdenes Consecutivas (NULL si solo tiene 1 compra)
+    COALESCE(AVG(fo.dias_desde_orden_anterior * 1.0), 9999) AS avg_days_between_orders,
+
+    -- Órdenes por Mes Lógico (apto para Feature Engineering)
+ CASE
+    -- Días transcurridos desde su PRIMERA compra hasta la FECHA DE CORTE
+    WHEN DATEDIFF(DAY, m.first_order_date, f.FechaCorteOriginal) >= 30
+    THEN m.total_orders * 1.0 / (DATEDIFF(DAY, m.first_order_date, f.FechaCorteOriginal) / 30.4375)
+
+    -- Si es un cliente muy nuevo (menos de 30 días desde su primera compra)
+    ELSE m.total_orders * 1.0
+END AS orders_per_month
+
+FROM MetricasTotales m
+LEFT JOIN FechasOrdenes fo
+    ON m.CustomerID = fo.CustomerID
+CROSS JOIN Fechas f
+GROUP BY
+    m.CustomerID,
+    m.total_orders,
+    m.total_spent,
+    m.first_order_date,
+    m.last_order_date,
+    m.unique_products,
+    f.FechaCorteOriginal),
+
+-------APARTADO COMPRAS HISTORICAS--------
+
 ComprasHistoricas AS (
     SELECT
         c.CustomerID,
@@ -164,6 +208,8 @@ ComprasHistoricas AS (
         ON ho.CustomerID = c.CustomerID
     WHERE c.CustomerID IS NOT NULL
 ),
+
+-------APARTADO COMPRAS FUTURAS--------
 ComprasFuturas AS (
     SELECT
         soh.CustomerID,
@@ -175,11 +221,13 @@ ComprasFuturas AS (
     FROM Sales.SalesOrderHeader soh
     CROSS JOIN Fechas f
     WHERE soh.OrderDate > f.FechaCorteOriginal
-        AND soh.OrderDate <= f.FechaHoyOriginal
+        AND soh.OrderDate <= f.FechaMaximaOriginal
     GROUP BY
         soh.CustomerID,
         f.Fecha90Original
 )
+
+-------ARREGLO FINAL--------
 SELECT
     h.*,
     COALESCE(f.future_orders_90d, 0) AS future_orders_90d,
@@ -194,8 +242,7 @@ SELECT
         ELSE 'never_purchased'
     END AS customer_cohort
 FROM ComprasHistoricas h
-LEFT JOIN ComprasFuturas f ON h.CustomerID = f.CustomerID;
-    """
+LEFT JOIN ComprasFuturas f ON h.CustomerID = f.CustomerID;"""
     return pd.read_sql(query, conn)
 
 

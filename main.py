@@ -8,9 +8,9 @@ from pathlib import Path
 
 SCRIPTS = [
     ("01_data_extraction.py", "Data Extraction"),
-    ("02_eda.py", "Exploratory Data Analysis"),
     ("03_preprocessing.py", "Data Preprocessing"),
     ("04_feature_engineering.py", "Feature Engineering"),
+    ("02_eda.py", "Exploratory Data Analysis"),
     ("05_model_selection.py", "Model Selection"),
     ("06_training.py", "Model Training"),
     ("07_evaluation.py", "Model Evaluation")
